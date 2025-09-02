@@ -10,5 +10,5 @@ type Node struct {
 	Disk            int
 	DiskAllocated   int
 	Role            string
-	TaskkCount      int
+	TaskCount       int
 }
