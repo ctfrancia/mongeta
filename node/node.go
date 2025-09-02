@@ -1,0 +1,14 @@
+// Package node is represented of a physical machine
+package node
+
+type Node struct {
+	Name            string
+	IP              string
+	Cores           int
+	Memory          int
+	MemoryAllocated int
+	Disk            int
+	DiskAllocated   int
+	Role            string
+	TaskkCount      int
+}
