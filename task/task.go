@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/docker/docker/pkg/stdcopy"
-	//"github.com/moby/moby/api/types"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/client"
@@ -78,12 +77,12 @@ type DockerResult struct {
 	Result      string
 }
 
-func (d *Docker) Run(task Task) DockerResult {
+func (d *Docker) Run() DockerResult {
 	ctx := context.Background()
-	reader, err := d.Client.ImagePull(ctx, task.Image, image.PullOptions{})
+	reader, err := d.Client.ImagePull(ctx, d.Config.Image, image.PullOptions{})
 	if err != nil {
 		log.Printf("Error pulling image %s: %v\n", d.Config.Image, err)
-		return DockerResult{Error: err, Action: "Pull", Result: task.Image}
+		return DockerResult{Error: err}
 	}
 	io.Copy(os.Stdout, reader)
 
@@ -120,7 +119,6 @@ func (d *Docker) Run(task Task) DockerResult {
 		return DockerResult{Error: err, Action: "Start", Result: d.Config.Name}
 	}
 
-	// d.Config.Runtime.ContainerID = resp.ID
 	out, err := d.Client.ContainerLogs(
 		ctx,
 		resp.ID,
