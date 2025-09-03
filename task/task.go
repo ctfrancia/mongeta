@@ -9,12 +9,15 @@ import (
 	"os"
 	"time"
 
-	"github.com/docker/go-connections/nat"
-	"github.com/google/uuid"
+	"github.com/docker/docker/pkg/stdcopy"
+	//"github.com/moby/moby/api/types"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/client"
-	"github.com/moby/moby/stdcopy"
+
+	"github.com/docker/go-connections/nat"
+
+	"github.com/google/uuid"
 )
 
 type State int
@@ -129,4 +132,22 @@ func (d *Docker) Run(task Task) DockerResult {
 	}
 	stdcopy.StdCopy(os.Stdout, os.Stderr, out)
 	return DockerResult{ContainerID: resp.ID, Action: "Start", Result: "Success"}
+}
+
+func (d *Docker) Stop(ID string) DockerResult {
+	log.Printf("Stopping container %v\n", ID)
+	ctx := context.Background()
+	err := d.Client.ContainerStop(ctx, ID, container.StopOptions{})
+	if err != nil {
+		log.Printf("Error stopping container %s: %v\n", ID, err)
+		return DockerResult{Error: err, Action: "Stop", Result: ID}
+	}
+
+	err = d.Client.ContainerRemove(ctx, ID, container.RemoveOptions{})
+	if err != nil {
+		log.Printf("Error removing container %s: %v\n", ID, err)
+		return DockerResult{Error: err, Action: "Remove", Result: ID}
+	}
+
+	return DockerResult{Action: "Stop", Result: "Success"}
 }
