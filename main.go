@@ -29,6 +29,7 @@ func main() {
 	api := worker.API{Address: host, Port: port, Worker: &w}
 
 	go runTasks(&w)
+	go w.CollectStats()
 	api.Start()
 	/*
 		db := make(map[uuid.UUID]*task.Task)

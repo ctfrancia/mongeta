@@ -20,6 +20,7 @@ type Worker struct {
 	Name      string
 	Queue     queue.Queue
 	DB        map[uuid.UUID]*task.Task
+	Stats     *Stats
 	TaskCount int
 }
 
@@ -32,7 +33,12 @@ func (w *Worker) GetTasks() []*task.Task {
 }
 
 func (w *Worker) CollectStats() {
-	fmt.Println("I will Collect stats")
+	for {
+		log.Println("Collecting stats")
+		w.Stats = GetStats()
+		w.Stats.TaskCount = w.TaskCount
+		time.Sleep(time.Second * 15)
+	}
 }
 
 func (w *Worker) RunTask() task.DockerResult {

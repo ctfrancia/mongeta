@@ -32,4 +32,7 @@ func (a *API) initRouter() {
 			r.Delete("/", a.StopTaskHandler)
 		})
 	})
+	a.Router.Route("/stats", func(r chi.Router) {
+		r.Get("/", a.GetStatsHandler)
+	})
 }
