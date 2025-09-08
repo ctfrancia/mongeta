@@ -28,6 +28,25 @@ type Manager struct {
 	LastWorker    int
 }
 
+func New(workers []string) *Manager {
+	taskDB := make(map[uuid.UUID]*task.Task)
+	eventDB := make(map[uuid.UUID]*task.TaskEvent)
+	workerTaskMap := make(map[string][]uuid.UUID)
+	taskWorkerMap := make(map[uuid.UUID]string)
+	for worker := range workers {
+		workerTaskMap[workers[worker]] = []uuid.UUID{}
+	}
+
+	return &Manager{
+		Pending:       *queue.New(),
+		TaskDB:        taskDB,
+		EventDB:       eventDB,
+		Workers:       workers,
+		WorkerTaskMap: workerTaskMap,
+		TaskWorkerMap: taskWorkerMap,
+	}
+}
+
 func (m *Manager) SelectWorker() string {
 	var newWorker int
 	if m.LastWorker+1 < len(m.Workers) {
@@ -132,4 +151,8 @@ func (m *Manager) SendWork() {
 	} else {
 		log.Println("No work in the queue")
 	}
+}
+
+func (m *Manager) AddTask(te task.TaskEvent) {
+	m.Pending.Enqueue(te)
 }

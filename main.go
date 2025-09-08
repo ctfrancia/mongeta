@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ctfrancia/mongeta/manager"
 	"github.com/ctfrancia/mongeta/task"
 	"github.com/ctfrancia/mongeta/worker"
 
@@ -30,42 +31,41 @@ func main() {
 
 	go runTasks(&w)
 	go w.CollectStats()
-	api.Start()
-	/*
-		db := make(map[uuid.UUID]*task.Task)
+	go api.Start()
 
-		w := worker.Worker{
-			Queue: *queue.New(),
-			DB:    db,
-		}
+	workers := []string{fmt.Sprintf("%s:%d", host, port)}
+	m := manager.New(workers)
 
+	for i := range 3 {
 		t := task.Task{
 			ID:    uuid.New(),
-			Name:  "test-container-1",
+			Name:  fmt.Sprintf("test-container-%d", i),
 			State: task.Scheduled,
 			Image: "strm/helloworld-http",
 		}
-
-		fmt.Println("starting task")
-		w.AddTask(t)
-		result := w.RunTask()
-		if result.Error != nil {
-			panic(result.Error)
+		te := task.TaskEvent{
+			ID:    uuid.New(),
+			State: task.Running,
+			Task:  t,
 		}
+		m.AddTask(te)
+		m.SendWork()
+	}
 
-		t.ContainerID = result.ContainerID
-		fmt.Printf("task %s is running in container %s\n", t.ID, t.ContainerID)
-		fmt.Println("sleepy time")
-		time.Sleep(time.Second * 30)
-
-		fmt.Printf("stopping task %s\n", t.ID)
-		t.State = task.Completed
-		w.AddTask(t)
-		result = w.RunTask()
-		if result.Error != nil {
-			panic(result.Error)
+	go func() {
+		for {
+			fmt.Printf("[Manager] Updating tasks from %d workers\n", len(m.Workers))
+			m.UpdateTasks()
+			time.Sleep(15 * time.Second)
 		}
-	*/
+	}()
+
+	for {
+		for _, t := range m.TaskDB {
+			fmt.Printf("[Manager] Task: id: %s, state: %d\n", t.ID, t.State)
+			time.Sleep(15 * time.Second)
+		}
+	}
 }
 
 func runTasks(w *worker.Worker) {
