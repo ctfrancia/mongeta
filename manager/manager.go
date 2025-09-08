@@ -5,30 +5,131 @@
 package manager
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"log"
+	"net/http"
 
 	"github.com/ctfrancia/mongeta/task"
+	"github.com/ctfrancia/mongeta/worker"
+
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 )
 
 type Manager struct {
 	Pending       queue.Queue
-	TaskDB        map[string][]*task.Task
-	EventDB       map[string][]*task.TaskEvent
+	TaskDB        map[uuid.UUID]*task.Task
+	EventDB       map[uuid.UUID]*task.TaskEvent
 	Workers       []string
 	WorkerTaskMap map[string][]uuid.UUID
 	TaskWorkerMap map[uuid.UUID]string
+	LastWorker    int
 }
 
-func (m *Manager) SelectWorker() {
-	fmt.Println("I will select an appropriate worker")
+func (m *Manager) SelectWorker() string {
+	var newWorker int
+	if m.LastWorker+1 < len(m.Workers) {
+		newWorker = m.LastWorker + 1
+		m.LastWorker++
+	} else {
+		newWorker = 0
+		m.LastWorker = 0
+	}
+
+	return m.Workers[newWorker]
 }
 
 func (m *Manager) UpdateTasks() {
-	fmt.Println("I will update the tasks")
+	for _, worker := range m.Workers {
+		log.Printf("Checking worker %v for task updates\n", worker)
+		url := fmt.Sprintf("http://%s/tasks", worker)
+		resp, err := http.Get(url)
+		if err != nil {
+			log.Printf("Error connecting to %v: %v\n", worker, err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("Error Sending request: %v\n", err)
+		}
+
+		d := json.NewDecoder(resp.Body)
+		var tasks []*task.Task
+		err = d.Decode(&tasks)
+		if err != nil {
+			log.Printf("Error unmarshalling tasks: %s\n", err)
+		}
+
+		for _, t := range tasks {
+			log.Printf("Attempting to update task %v\n", t.ID)
+
+			_, ok := m.TaskDB[t.ID]
+			if !ok {
+				log.Printf("Task with ID %s not found", t.ID)
+				return
+			}
+
+			if m.TaskDB[t.ID].State != t.State {
+				m.TaskDB[t.ID].State = t.State
+			}
+
+			m.TaskDB[t.ID].StartTime = t.StartTime
+			m.TaskDB[t.ID].FinishTime = t.FinishTime
+			m.TaskDB[t.ID].ContainerID = t.ContainerID
+
+		}
+	}
 }
 
 func (m *Manager) SendWork() {
-	fmt.Println("I will send work to workers")
+	if m.Pending.Len() > 0 {
+		w := m.SelectWorker()
+
+		e := m.Pending.Dequeue()
+		te := e.(task.TaskEvent)
+		t := te.Task
+
+		log.Printf("Sending task %v to worker %v\n", t.ID, w)
+
+		m.EventDB[te.ID] = &te
+		m.WorkerTaskMap[w] = append(m.WorkerTaskMap[w], te.Task.ID)
+		m.TaskWorkerMap[t.ID] = w
+
+		t.State = task.Scheduled
+		m.TaskDB[t.ID] = &t
+
+		data, err := json.Marshal(te)
+		if err != nil {
+			log.Printf("Unable to marshal task object: %v.\n", t)
+		}
+
+		url := fmt.Sprintf("http://%s/tasks", w)
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(data))
+		if err != nil {
+			log.Printf("Error sending task to worker %v: %v\n", w, err)
+			return
+		}
+		d := json.NewDecoder(resp.Body)
+		if resp.StatusCode != http.StatusCreated {
+			e := worker.ErrorResponse{}
+			err := d.Decode(&e)
+			if err != nil {
+				log.Printf("Error decoding error response: %v\n", err)
+				return
+			}
+			log.Printf("Response error (%d): %s\n", e.HTTPStatusCode, e.Message)
+			return
+		}
+
+		t = task.Task{}
+		err = d.Decode(&t)
+		if err != nil {
+			log.Printf("Error decoding task response: %v\n", err)
+			return
+		}
+		log.Printf("%#v", t)
+	} else {
+		log.Println("No work in the queue")
+	}
 }
