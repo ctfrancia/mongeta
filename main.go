@@ -2,10 +2,8 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"strconv"
-	"time"
 
 	"github.com/ctfrancia/mongeta/manager"
 	"github.com/ctfrancia/mongeta/task"
@@ -18,8 +16,11 @@ import (
 )
 
 func main() {
-	host := os.Getenv("MONGETA_HOST")
-	port, _ := strconv.Atoi(os.Getenv("MONGETA_PORT"))
+	whost := os.Getenv("MONGETA_WORKER_HOST")
+	wport, _ := strconv.Atoi(os.Getenv("MONGETA_WORKER_PORT"))
+
+	mhost := os.Getenv("MONGETA_HOST")
+	mport, _ := strconv.Atoi(os.Getenv("MONGETA_PORT"))
 
 	fmt.Println("Starting Mongeta worker")
 
@@ -27,60 +28,19 @@ func main() {
 		Queue: *queue.New(),
 		DB:    make(map[uuid.UUID]*task.Task),
 	}
-	api := worker.API{Address: host, Port: port, Worker: &w}
+	wapi := worker.API{Address: whost, Port: wport, Worker: &w}
 
-	go runTasks(&w)
+	go w.RunTasks()
 	go w.CollectStats()
-	go api.Start()
+	go wapi.Start()
 
-	workers := []string{fmt.Sprintf("%s:%d", host, port)}
+	workers := []string{fmt.Sprintf("%s:%d", whost, wport)}
 	m := manager.New(workers)
+	mapi := manager.API{Address: mhost, Port: mport, Manager: m}
+	go m.ProcessTasks()
+	go m.UpdateTasks()
 
-	for i := range 3 {
-		t := task.Task{
-			ID:    uuid.New(),
-			Name:  fmt.Sprintf("test-container-%d", i),
-			State: task.Scheduled,
-			Image: "strm/helloworld-http",
-		}
-		te := task.TaskEvent{
-			ID:    uuid.New(),
-			State: task.Running,
-			Task:  t,
-		}
-		m.AddTask(te)
-		m.SendWork()
-	}
-
-	go func() {
-		for {
-			fmt.Printf("[Manager] Updating tasks from %d workers\n", len(m.Workers))
-			m.UpdateTasks()
-			time.Sleep(15 * time.Second)
-		}
-	}()
-
-	for {
-		for _, t := range m.TaskDB {
-			fmt.Printf("[Manager] Task: id: %s, state: %d\n", t.ID, t.State)
-			time.Sleep(15 * time.Second)
-		}
-	}
-}
-
-func runTasks(w *worker.Worker) {
-	for {
-		if w.Queue.Len() != 0 {
-			result := w.RunTask()
-			if result.Error != nil {
-				log.Printf("Error running task: %v\n", result.Error)
-			}
-		} else {
-			log.Printf("No tasks to process currently.\n")
-		}
-		log.Println("Sleeping for 10 seconds.")
-		time.Sleep(10 * time.Second)
-	}
+	mapi.Start()
 }
 
 func createContainer() (*task.Docker, *task.DockerResult) {
