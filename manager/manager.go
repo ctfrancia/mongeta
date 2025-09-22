@@ -7,9 +7,11 @@ package manager
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ctfrancia/mongeta/task"
@@ -18,6 +20,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
+
+	"github.com/docker/go-connections/nat"
 )
 
 type API struct {
@@ -172,6 +176,57 @@ func (m *Manager) updateTasks() {
 			m.TaskDB[t.ID].ContainerID = t.ContainerID
 		}
 	}
+}
+
+func (m *Manager) checkTaskHealth(t task.Task) error {
+	log.Printf("Calling health check for task %s: %s\n", t.ID, t.HealthCheck)
+	w := m.TaskWorkerMap[t.ID]
+	hostPort := getHostPort(t.HostPorts)
+	worker := strings.Split(w, ":")
+	url := fmt.Sprintf("http://%s:%s/%s", worker[0], *hostPort, t.HealthCheck)
+
+	log.Printf("Calling health check for task %s: %s", t.ID, url)
+	resp, err := http.Get(url)
+	if err != nil {
+		msg := fmt.Sprintf("Error connecting to health check %s", url)
+		log.Println(msg)
+		return errors.New(msg)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		msg := fmt.Sprintf("Error health check for task %s did not return 200\n", t.ID)
+		log.Println(msg)
+		return errors.New(msg)
+	}
+
+	log.Printf("Task %s health check response: %v\n", t.ID, resp.StatusCode)
+
+	return nil
+}
+
+func (m *Manager) doHealthChecks() {
+	for _, t := range m.GetTasks() {
+		if t.State == task.Running && t.RestartCount < 3 {
+			err := m.checkTaskHealth(*t)
+			if err != nil {
+				if t.RestartCount < 3 {
+					m.restartTask(t)
+				}
+			}
+		} else if t.State == task.Failed && t.RestartCount < 3 {
+			m.restartTask(t)
+		}
+	}
+}
+
+func (m *Manager) restartTask(t *task.Task) {
+}
+
+func getHostPort(ports nat.PortMap) *string {
+	for k, _ := range ports {
+		return &ports[k][0].HostPort
+	}
+	return nil
 }
 
 func (m *Manager) ProcessTasks() {

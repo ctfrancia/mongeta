@@ -39,10 +39,13 @@ type Task struct {
 	Memory        int64
 	Disk          int64
 	ExposedPorts  nat.PortSet
+	HostPorts     nat.PortMap
 	PortBindings  map[string]string
 	RestartPolicy container.RestartPolicyMode
 	StartTime     time.Time
 	FinishTime    time.Time
+	HealthCheck   string
+	RestartCount  int
 }
 
 type TaskEvent struct {
@@ -70,6 +73,11 @@ type Config struct {
 type Docker struct {
 	Client *client.Client
 	Config Config
+}
+
+type DockerInspectResponse struct {
+	Error     error
+	Container *container.InspectResponse
 }
 
 type DockerResult struct {
@@ -173,4 +181,16 @@ func (d *Docker) Stop(ID string) DockerResult {
 	}
 
 	return DockerResult{Action: "Stop", Result: "Success"}
+}
+
+func (d *Docker) Inspect(containerID string) DockerInspectResponse {
+	dc, _ := client.NewClientWithOpts(client.FromEnv)
+	ctx := context.Background()
+	resp, err := dc.ContainerInspect(ctx, containerID)
+	if err != nil {
+		log.Printf("Error inspecting container %s: %v\n", containerID, err)
+		return DockerInspectResponse{Error: err}
+	}
+
+	return DockerInspectResponse{Container: &resp}
 }
