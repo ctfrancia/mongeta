@@ -6,6 +6,7 @@
 package worker
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -32,12 +33,19 @@ func (w *Worker) GetTasks() []*task.Task {
 	return tasks
 }
 
-func (w *Worker) CollectStats() {
+func (w *Worker) CollectStats(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
-		log.Println("Collecting stats")
-		w.Stats = GetStats()
-		w.Stats.TaskCount = w.TaskCount
-		time.Sleep(time.Second * 15)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			log.Println("Collecting stats")
+			w.Stats = GetStats()
+			w.Stats.TaskCount = w.TaskCount
+			log.Println("Stats collected")
+		}
 	}
 }
 
@@ -164,17 +172,17 @@ func (w *Worker) InspectTask(t task.Task) task.DockerInspectResponse {
 	return d.Inspect(t.ContainerID)
 }
 
-func (w *Worker) UpdateTasks() {
+func (w *Worker) UpdateTasks(ctx context.Context) {
 	for {
 		log.Println("Checking status of tasks")
-		w.updateTasks()
+		w.updateTasks(ctx)
 		log.Println("Task updates completed")
 		log.Println("Sleeping for 15 seconds.")
 		time.Sleep(15 * time.Second)
 	}
 }
 
-func (w *Worker) updateTasks() {
+func (w *Worker) updateTasks(ctx context.Context) {
 	for id, t := range w.DB {
 		if t.State == task.Running {
 			resp := w.InspectTask(*t)
@@ -197,17 +205,22 @@ func (w *Worker) updateTasks() {
 	}
 }
 
-func (w *Worker) RunTasks() {
+func (w *Worker) RunTasks(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
-		if w.Queue.Len() != 0 {
-			result := w.runTask()
-			if result.Error != nil {
-				log.Printf("Error running task: %v\n", result.Error)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if w.Queue.Len() != 0 {
+				result := w.runTask()
+				if result.Error != nil {
+					log.Printf("Error running task: %v\n", result.Error)
+				}
+			} else {
+				log.Printf("No tasks to process currently.\n")
 			}
-		} else {
-			log.Printf("No tasks to process currently.\n")
 		}
-		log.Println("Sleeping for 10 seconds.")
-		time.Sleep(10 * time.Second)
 	}
 }

@@ -6,6 +6,7 @@ package manager
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -129,13 +130,20 @@ func (m *Manager) AddTask(te task.TaskEvent) {
 	m.Pending.Enqueue(te)
 }
 
-func (m *Manager) UpdateTasks() {
+func (m *Manager) UpdateTasks(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
 	for {
-		log.Println("Checking for task updates from workers")
-		m.updateTasks()
-		log.Println("Task updates completed")
-		log.Println("Sleeping for 15 seconds")
-		time.Sleep(15 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			log.Println("Checking for task updates from workers")
+			m.updateTasks()
+			log.Println("Task updates completed")
+			log.Println("Sleeping for 15 seconds")
+		}
 	}
 }
 
@@ -229,11 +237,17 @@ func getHostPort(ports nat.PortMap) *string {
 	return nil
 }
 
-func (m *Manager) ProcessTasks() {
+func (m *Manager) ProcessTasks(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
-		log.Println("Processing any tasks in the queue")
-		m.SendWork()
-		log.Println("Sleeping for 10 seconds")
-		time.Sleep(10 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			log.Println("Processing any tasks in the queue")
+			m.SendWork()
+			log.Println("Sleeping for 10 seconds")
+		}
 	}
 }

@@ -1,82 +1,68 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
-	"strconv"
+	"os/signal"
+	"sync"
+	"syscall"
 
+	"github.com/ctfrancia/mongeta/config"
 	"github.com/ctfrancia/mongeta/manager"
 	"github.com/ctfrancia/mongeta/task"
 	"github.com/ctfrancia/mongeta/worker"
 
+	"github.com/caarlos0/env/v11"
 	"github.com/golang-collections/collections/queue"
-
 	"github.com/google/uuid"
-	"github.com/moby/moby/client"
 )
 
 func main() {
-	whost := os.Getenv("MONGETA_WORKER_HOST")
-	wport, _ := strconv.Atoi(os.Getenv("MONGETA_WORKER_PORT"))
+	cfg := config.Config{}
+	if err := env.Parse(&cfg); err != nil {
+		log.Fatal(err)
+	}
 
-	mhost := os.Getenv("MONGETA_HOST")
-	mport, _ := strconv.Atoi(os.Getenv("MONGETA_PORT"))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt,
+		syscall.SIGTERM)
+	defer stop()
 
-	fmt.Println("Starting Mongeta worker")
+	log.Println("Starting Mongeta")
 
 	w := worker.Worker{
 		Queue: *queue.New(),
 		DB:    make(map[uuid.UUID]*task.Task),
 	}
-	wapi := worker.API{Address: whost, Port: wport, Worker: &w}
+	wapi := worker.API{Address: cfg.Worker.Host, Port: cfg.Worker.Port, Worker: &w}
 
-	go w.RunTasks()
-	go w.CollectStats()
-	go wapi.Start()
-
-	workers := []string{fmt.Sprintf("%s:%d", whost, wport)}
+	workers := []string{fmt.Sprintf("%s:%d", cfg.Worker.Host, cfg.Worker.Port)}
 	m := manager.New(workers)
-	mapi := manager.API{Address: mhost, Port: mport, Manager: m}
-	go m.ProcessTasks()
-	go m.UpdateTasks()
+	mapi := manager.API{Address: cfg.Manager.Host, Port: cfg.Manager.Port, Manager: m}
 
-	mapi.Start()
-}
+	var wg sync.WaitGroup
 
-func createContainer() (*task.Docker, *task.DockerResult) {
-	c := task.Config{
-		Name:  "test-container-1",
-		Image: "postgres:13",
-		Env: []string{
-			"POSTGRES_USER=mongeta",
-			"POSTGRES_PASSWORD=secret",
-		},
-	}
+	wg.Add(1)
+	go func() { defer wg.Done(); w.RunTasks(ctx, cfg.Worker.RunInterval) }()
 
-	dc, _ := client.NewClientWithOpts(
-		client.FromEnv,
-		client.WithAPIVersionNegotiation(),
-	)
-	d := task.Docker{
-		Client: dc,
-		Config: c,
-	}
-	result := d.Run()
-	if result.Error != nil {
-		fmt.Printf("Error: %v\n", result.Error)
-		return nil, nil
-	}
+	wg.Add(1)
+	go func() { defer wg.Done(); w.CollectStats(ctx, cfg.Worker.StatsInterval) }()
 
-	fmt.Printf("Container %s is running with config %v\n", result.ContainerID, c)
-	return &d, &result
-}
+	wg.Add(1)
+	go func() { defer wg.Done(); wapi.Start(ctx) }()
 
-func stopContainer(d *task.Docker, ID string) *task.DockerResult {
-	result := d.Stop(ID)
-	if result.Error != nil {
-		fmt.Printf("Error: %v\n", result.Error)
-		return nil
-	}
-	fmt.Printf("Container %s has been stopped and removed\n", result.ContainerID)
-	return &result
+	wg.Add(1)
+	go func() { defer wg.Done(); m.ProcessTasks(ctx, cfg.Manager.ProcessInterval) }()
+
+	wg.Add(1)
+	go func() { defer wg.Done(); m.UpdateTasks(ctx, cfg.Manager.UpdateInterval) }()
+
+	wg.Add(1)
+	go func() { defer wg.Done(); mapi.Start(ctx) }()
+
+	<-ctx.Done()
+	log.Println("Shutdown signal received, waiting for goroutines...")
+	wg.Wait()
+	log.Println("Clean shutdown complete")
 }

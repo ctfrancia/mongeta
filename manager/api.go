@@ -1,7 +1,9 @@
 package manager
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -12,9 +14,18 @@ type ErrResponse struct {
 	Message        string
 }
 
-func (a *API) Start() {
+func (a *API) Start(ctx context.Context) {
 	a.initRouter()
-	http.ListenAndServe(fmt.Sprintf("%s:%d", a.Address, a.Port), a.Router)
+	srv := &http.Server{Addr: fmt.Sprintf("%s:%d", a.Address, a.Port), Handler: a.Router}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	srv.Shutdown(context.Background())
 }
 
 func (a *API) initRouter() {
