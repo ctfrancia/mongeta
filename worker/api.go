@@ -31,7 +31,9 @@ func (a *API) Start(ctx context.Context) {
 	}()
 
 	<-ctx.Done()
-	srv.Shutdown(context.Background())
+	if err := srv.Shutdown(context.Background()); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	}
 }
 
 func (a *API) initRouter() {

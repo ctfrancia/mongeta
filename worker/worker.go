@@ -49,52 +49,19 @@ func (w *Worker) CollectStats(ctx context.Context, interval time.Duration) {
 	}
 }
 
-func (w *Worker) RunTask() task.DockerResult {
-	t := w.Queue.Dequeue()
-	if t == nil {
-		log.Printf("No task in the queue")
-		return task.DockerResult{Error: nil}
-	}
-
-	taskQueued, ok := t.(task.Task)
-	if !ok {
-		err := fmt.Errorf("invalid type %T", t)
-		return task.DockerResult{Error: err}
-	}
-
-	taskPersisted := w.DB[taskQueued.ID]
-	if taskPersisted == nil {
-		taskPersisted = &taskQueued
-		w.DB[taskQueued.ID] = &taskQueued
-
-	}
-
-	var result task.DockerResult
-	if task.ValidStateTransition(taskPersisted.State, taskQueued.State) {
-		switch taskQueued.State {
-		case task.Scheduled:
-			result = w.StartTask(taskQueued)
-		case task.Completed:
-			result = w.StopTask(taskQueued)
-		default:
-			result.Error = errors.New("we shouldn't get here")
-		}
-	} else {
-		err := fmt.Errorf("invalid transition from %v to %v", taskPersisted.State, taskQueued.State)
-		result.Error = err
-	}
-
-	return result
-}
-
 func (w *Worker) StartTask(t task.Task) task.DockerResult {
 	t.StartTime = time.Now().UTC()
 
 	config := task.NewConfig(&t)
-	d := task.NewDocker(config)
+	d, err := task.NewDocker(config)
+	if err != nil {
+		log.Printf("Error creating docker client: %v\n", err)
+		return task.DockerResult{Error: err}
+	}
+
 	result := d.Run()
 	if result.Error != nil {
-		fmt.Printf("Error starting container %v: %v\n", t.ContainerID, result.Error)
+		log.Printf("Error starting container %v: %v\n", t.ContainerID, result.Error)
 		t.State = task.Failed
 		w.DB[t.ID] = &t
 		return result
@@ -110,12 +77,16 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 func (w *Worker) StopTask(t task.Task) task.DockerResult {
 	config := task.NewConfig(&t)
 
-	d := task.NewDocker(config)
+	d, err := task.NewDocker(config)
+	if err != nil {
+		log.Printf("Error creating docker client: %v\n", err)
+		return task.DockerResult{Error: err}
+	}
 
 	result := d.Stop(t.ContainerID)
 	if result.Error != nil {
-		fmt.Printf("Error stopping container %v: %v\n", t.ContainerID, result.Error)
-		// return result
+		log.Printf("Error stopping container %v: %v\n", t.ContainerID, result.Error)
+		return result
 	}
 
 	t.FinishTime = time.Now().UTC()
@@ -138,7 +109,6 @@ func (w *Worker) runTask() task.DockerResult {
 	}
 
 	taskQueued := t.(task.Task)
-	fmt.Printf("Found task in queue: %v:\n", taskQueued)
 
 	taskPersisted := w.DB[taskQueued.ID]
 	if taskPersisted == nil {
@@ -154,7 +124,6 @@ func (w *Worker) runTask() task.DockerResult {
 		case task.Completed:
 			result = w.StopTask(taskQueued)
 		default:
-			fmt.Printf("this is a mistake. taskPersisted: %v, taskQueued: %v\n", taskPersisted, taskQueued)
 			result.Error = errors.New("we should not get here")
 		}
 	} else {
@@ -167,18 +136,27 @@ func (w *Worker) runTask() task.DockerResult {
 
 func (w *Worker) InspectTask(t task.Task) task.DockerInspectResponse {
 	config := task.NewConfig(&t)
-	d := task.NewDocker(config)
+	d, err := task.NewDocker(config)
+	if err != nil {
+		log.Printf("Error creating docker client: %v\n", err)
+		return task.DockerInspectResponse{Error: err}
+	}
 
-	return d.Inspect(t.ContainerID)
+	return d.Inspect(context.Background(), t.ContainerID)
 }
 
-func (w *Worker) UpdateTasks(ctx context.Context) {
+func (w *Worker) UpdateTasks(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
-		log.Println("Checking status of tasks")
-		w.updateTasks(ctx)
-		log.Println("Task updates completed")
-		log.Println("Sleeping for 15 seconds.")
-		time.Sleep(15 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			log.Println("Checking status of tasks")
+			w.updateTasks(ctx)
+			log.Println("Task updates completed")
+		}
 	}
 }
 
@@ -187,12 +165,13 @@ func (w *Worker) updateTasks(ctx context.Context) {
 		if t.State == task.Running {
 			resp := w.InspectTask(*t)
 			if resp.Error != nil {
-				fmt.Printf("ERROR: %v\n", resp.Error)
+				log.Printf("ERROR: %v\n", resp.Error)
 			}
 
 			if resp.Container == nil {
 				log.Printf("No container for running task %s \n", id)
 				w.DB[id].State = task.Failed
+				continue
 			}
 
 			if resp.Container.State.Status == "exited" {
