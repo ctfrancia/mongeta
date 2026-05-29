@@ -99,15 +99,19 @@ func NewConfig(t *Task) *Config {
 	}
 }
 
-func NewDocker(c *Config) *Docker {
-	dc, _ := client.NewClientWithOpts(
+func NewDocker(c *Config) (*Docker, error) {
+	dc, err := client.NewClientWithOpts(
 		client.FromEnv,
 		client.WithAPIVersionNegotiation(),
 	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Docker{
 		Client: dc,
 		Config: *c,
-	}
+	}, nil
 }
 
 func (d *Docker) Run() DockerResult {
@@ -133,6 +137,9 @@ func (d *Docker) Run() DockerResult {
 		Tty:          false,
 		Env:          d.Config.Env,
 		ExposedPorts: d.Config.ExposedPorts,
+		AttachStdin:  d.Config.AttachStdin,
+		AttachStdout: d.Config.AttachStdout,
+		AttachStderr: d.Config.AttachStderr,
 	}
 
 	hc := container.HostConfig{
@@ -183,10 +190,8 @@ func (d *Docker) Stop(ID string) DockerResult {
 	return DockerResult{Action: "Stop", Result: "Success"}
 }
 
-func (d *Docker) Inspect(containerID string) DockerInspectResponse {
-	dc, _ := client.NewClientWithOpts(client.FromEnv)
-	ctx := context.Background()
-	resp, err := dc.ContainerInspect(ctx, containerID)
+func (d *Docker) Inspect(ctx context.Context, containerID string) DockerInspectResponse {
+	resp, err := d.Client.ContainerInspect(ctx, containerID)
 	if err != nil {
 		log.Printf("Error inspecting container %s: %v\n", containerID, err)
 		return DockerInspectResponse{Error: err}
