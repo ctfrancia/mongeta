@@ -21,7 +21,8 @@ type ManagerConfig struct {
 	Port            int           `env:"MONGETA_PORT" envDefault:"8081"`
 	ProcessInterval time.Duration `env:"MONGETA_MANAGER_PROCESS_INTERVAL" envDefault:"10s"`
 	UpdateInterval  time.Duration `env:"MONGETA_MANAGER_UPDATE_INTERVAL" envDefault:"15s"`
-	MaxRestarts     int           `env:"MONGETA_MANAGER_MAX_RESTARTS" envDefault:"3"`
+	MaxRestarts         int           `env:"MONGETA_MANAGER_MAX_RESTARTS"      envDefault:"3"`
+	HealthCheckInterval time.Duration `env:"MONGETA_MANAGER_HEALTH_INTERVAL"   envDefault:"20s"`
 }
 
 type ServerConfig struct {

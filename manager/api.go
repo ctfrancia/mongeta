@@ -9,6 +9,13 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+type API struct {
+	Address string
+	Port    int
+	Manager *Manager
+	Router  *chi.Mux
+}
+
 type ErrResponse struct {
 	HTTPStatusCode int
 	Message        string
@@ -25,7 +32,9 @@ func (a *API) Start(ctx context.Context) {
 	}()
 
 	<-ctx.Done()
-	srv.Shutdown(context.Background())
+	if err := srv.Shutdown(context.Background()); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	}
 }
 
 func (a *API) initRouter() {

@@ -16,21 +16,12 @@ import (
 	"time"
 
 	"github.com/ctfrancia/mongeta/task"
-	"github.com/ctfrancia/mongeta/worker"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 
 	"github.com/docker/go-connections/nat"
 )
-
-type API struct {
-	Address string
-	Port    int
-	Manager *Manager
-	Router  *chi.Mux
-}
 
 type Manager struct {
 	Pending       queue.Queue
@@ -104,7 +95,7 @@ func (m *Manager) SendWork() {
 		}
 		d := json.NewDecoder(resp.Body)
 		if resp.StatusCode != http.StatusCreated {
-			e := worker.ErrorResponse{}
+			e := ErrResponse{}
 			err := d.Decode(&e)
 			if err != nil {
 				log.Printf("Error decoding error response: %v\n", err)
@@ -154,10 +145,12 @@ func (m *Manager) updateTasks() {
 		resp, err := http.Get(url)
 		if err != nil {
 			log.Printf("Error connecting to %v: %v", worker, err)
+			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
 			log.Printf("Error sending request: %v", err)
+			continue
 		}
 
 		d := json.NewDecoder(resp.Body)
@@ -173,7 +166,7 @@ func (m *Manager) updateTasks() {
 			_, ok := m.TaskDB[t.ID]
 			if !ok {
 				log.Printf("Task with ID %s not found\n", t.ID)
-				return
+				continue
 			}
 			if m.TaskDB[t.ID].State != t.State {
 				m.TaskDB[t.ID].State = t.State
@@ -212,14 +205,26 @@ func (m *Manager) checkTaskHealth(t task.Task) error {
 	return nil
 }
 
+func (m *Manager) DoHealthChecks(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			log.Println("Performing health checks")
+			m.doHealthChecks()
+			log.Println("Health checks completed")
+		}
+	}
+}
+
 func (m *Manager) doHealthChecks() {
 	for _, t := range m.GetTasks() {
 		if t.State == task.Running && t.RestartCount < 3 {
-			err := m.checkTaskHealth(*t)
-			if err != nil {
-				if t.RestartCount < 3 {
-					m.restartTask(t)
-				}
+			if err := m.checkTaskHealth(*t); err != nil {
+				m.restartTask(t)
 			}
 		} else if t.State == task.Failed && t.RestartCount < 3 {
 			m.restartTask(t)
@@ -228,10 +233,22 @@ func (m *Manager) doHealthChecks() {
 }
 
 func (m *Manager) restartTask(t *task.Task) {
+	t.RestartCount++
+	t.State = task.Scheduled
+	m.TaskDB[t.ID] = t
+
+	te := task.TaskEvent{
+		ID:        uuid.New(),
+		State:     task.Scheduled,
+		TimeStamp: time.Now(),
+		Task:      *t,
+	}
+	m.AddTask(te)
+	log.Printf("Restarting task %v (attempt %d)\n", t.ID, t.RestartCount)
 }
 
 func getHostPort(ports nat.PortMap) *string {
-	for k, _ := range ports {
+	for k := range ports {
 		return &ports[k][0].HostPort
 	}
 	return nil

@@ -54,6 +54,7 @@ func (a *API) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	if taskID == "" {
 		log.Printf("No taskID passed in request.\n")
 		w.WriteHeader(http.StatusBadRequest)
+		return
 	}
 
 	tID, _ := uuid.Parse(taskID)
@@ -61,6 +62,7 @@ func (a *API) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		log.Printf("No task with ID %v found", tID)
 		w.WriteHeader(http.StatusNotFound)
+		return
 	}
 
 	te := task.TaskEvent{

@@ -59,6 +59,9 @@ func main() {
 	go func() { defer wg.Done(); m.UpdateTasks(ctx, cfg.Manager.UpdateInterval) }()
 
 	wg.Add(1)
+	go func() { defer wg.Done(); m.DoHealthChecks(ctx, cfg.Manager.HealthCheckInterval) }()
+
+	wg.Add(1)
 	go func() { defer wg.Done(); mapi.Start(ctx) }()
 
 	<-ctx.Done()
