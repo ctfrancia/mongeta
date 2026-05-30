@@ -1,8 +1,7 @@
 package worker
 
 import (
-	"log"
-
+	"github.com/ctfrancia/mongeta/logger"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/shirou/gopsutil/v3/load"
@@ -64,9 +63,7 @@ func (s *Stats) CPUUsage() float64 {
 		return 0.0
 	}
 
-	// Use the first (combined) CPU stat
 	cpuStat := s.CPUStats[0]
-
 	idle := cpuStat.Idle + cpuStat.Iowait
 	nonIdle := cpuStat.User + cpuStat.Nice + cpuStat.System +
 		cpuStat.Irq + cpuStat.Softirq + cpuStat.Steal
@@ -81,7 +78,7 @@ func (s *Stats) CPUUsage() float64 {
 func GetMemoryInfo() *mem.VirtualMemoryStat {
 	memstats, err := mem.VirtualMemory()
 	if err != nil {
-		log.Printf("Error reading memory info: %v", err)
+		logger.Error("error reading memory info", "err", err)
 		return &mem.VirtualMemoryStat{}
 	}
 	return memstats
@@ -90,16 +87,16 @@ func GetMemoryInfo() *mem.VirtualMemoryStat {
 func GetDiskInfo() *disk.UsageStat {
 	diskstats, err := disk.Usage("/")
 	if err != nil {
-		log.Printf("Error reading disk info: %v", err)
+		logger.Error("error reading disk info", "err", err)
 		return &disk.UsageStat{}
 	}
 	return diskstats
 }
 
 func GetCPUStats() []cpu.TimesStat {
-	stats, err := cpu.Times(false) // false = combined stats
+	stats, err := cpu.Times(false)
 	if err != nil {
-		log.Printf("Error reading CPU stats: %v", err)
+		logger.Error("error reading CPU stats", "err", err)
 		return []cpu.TimesStat{}
 	}
 	return stats
@@ -108,7 +105,7 @@ func GetCPUStats() []cpu.TimesStat {
 func GetLoadAvg() *load.AvgStat {
 	loadavg, err := load.Avg()
 	if err != nil {
-		log.Printf("Error reading load average: %v", err)
+		logger.Error("error reading load average", "err", err)
 		return &load.AvgStat{}
 	}
 	return loadavg

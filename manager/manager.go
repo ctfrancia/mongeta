@@ -1,4 +1,4 @@
-// Package manager handles the schedule/ api/stask storage/ workers
+// Package manager handles the schedule/ api/task storage/ workers
 // 1. Accept requests from users to start and stop tasks
 // 2. Schedule tasks onto worker machines
 // 3. Keep track of tasks, their states, and the machine on which they run
@@ -8,19 +8,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ctfrancia/mongeta/logger"
 	"github.com/ctfrancia/mongeta/task"
-
-	"github.com/google/uuid"
-
 	"github.com/docker/go-connections/nat"
-	"sync"
+	"github.com/google/uuid"
 )
 
 type Manager struct {
@@ -74,7 +71,7 @@ func (m *Manager) SendWork() {
 		w := m.SelectWorker()
 		t := te.Task
 
-		log.Printf("Sending task %v to worker %v\n", t.ID, w)
+		logger.Info("sending task to worker", "task_id", t.ID, "worker", w)
 
 		m.mu.Lock()
 		m.EventDB[te.ID] = &te
@@ -86,13 +83,13 @@ func (m *Manager) SendWork() {
 
 		data, err := json.Marshal(te)
 		if err != nil {
-			log.Printf("Unable to marshal task object: %v.\n", t)
+			logger.Error("unable to marshal task", "task_id", t.ID, "err", err)
 		}
 
 		url := fmt.Sprintf("http://%s/tasks", w)
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(data))
 		if err != nil {
-			log.Printf("Error sending task to worker %v: %v\n", w, err)
+			logger.Error("error sending task to worker", "worker", w, "err", err)
 			return
 		}
 		d := json.NewDecoder(resp.Body)
@@ -100,22 +97,22 @@ func (m *Manager) SendWork() {
 			e := ErrResponse{}
 			err := d.Decode(&e)
 			if err != nil {
-				log.Printf("Error decoding error response: %v\n", err)
+				logger.Error("error decoding error response", "err", err)
 				return
 			}
-			log.Printf("Response error (%d): %s\n", e.HTTPStatusCode, e.Message)
+			logger.Error("worker rejected task", "status", e.HTTPStatusCode, "message", e.Message)
 			return
 		}
 
 		t = task.Task{}
 		err = d.Decode(&t)
 		if err != nil {
-			log.Printf("Error decoding task response: %v\n", err)
+			logger.Error("error decoding task response", "err", err)
 			return
 		}
-		log.Printf("%#v", t)
+		logger.Debug("task confirmed by worker", "task_id", t.ID)
 	default:
-		log.Println("No work in the queue")
+		logger.Debug("no work in queue")
 	}
 }
 
@@ -123,7 +120,7 @@ func (m *Manager) AddTask(te task.TaskEvent) {
 	select {
 	case m.Pending <- te:
 	default:
-		log.Printf("Manager queue is full, dropping task %v\n", te.Task.ID)
+		logger.Warn("manager queue full, dropping task", "task_id", te.Task.ID)
 	}
 }
 
@@ -136,26 +133,25 @@ func (m *Manager) UpdateTasks(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			log.Println("Checking for task updates from workers")
+			logger.Info("checking task updates from workers")
 			m.updateTasks()
-			log.Println("Task updates completed")
-			log.Println("Sleeping for 15 seconds")
+			logger.Info("task updates completed")
 		}
 	}
 }
 
 func (m *Manager) updateTasks() {
 	for _, worker := range m.Workers {
-		log.Printf("Checking worker %v for task updates", worker)
+		logger.Info("checking worker for task updates", "worker", worker)
 		url := fmt.Sprintf("http://%s/tasks", worker)
 		resp, err := http.Get(url)
 		if err != nil {
-			log.Printf("Error connecting to %v: %v", worker, err)
+			logger.Error("error connecting to worker", "worker", worker, "err", err)
 			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			log.Printf("Error sending request: %v", err)
+			logger.Error("unexpected status from worker", "worker", worker, "status", resp.StatusCode)
 			continue
 		}
 
@@ -163,16 +159,16 @@ func (m *Manager) updateTasks() {
 		var tasks []*task.Task
 		err = d.Decode(&tasks)
 		if err != nil {
-			log.Printf("Error unmarshalling tasks: %s", err.Error())
+			logger.Error("error decoding tasks from worker", "worker", worker, "err", err)
 		}
 
 		for _, t := range tasks {
-			log.Printf("Attempting to update task %v", t.ID)
+			logger.Debug("updating task", "task_id", t.ID)
 
 			m.mu.Lock()
 			_, ok := m.TaskDB[t.ID]
 			if !ok {
-				log.Printf("Task with ID %s not found\n", t.ID)
+				logger.Warn("task not found in local db", "task_id", t.ID)
 				m.mu.Unlock()
 				continue
 			}
@@ -197,33 +193,29 @@ func (m *Manager) GetTaskWorker(id uuid.UUID) (string, bool) {
 }
 
 func (m *Manager) checkTaskHealth(t task.Task) error {
-	log.Printf("Calling health check for task %s: %s\n", t.ID, t.HealthCheck)
+	logger.Info("calling health check", "task_id", t.ID, "endpoint", t.HealthCheck)
 	w, ok := m.GetTaskWorker(t.ID)
 	if !ok {
-		msg := fmt.Sprintf("No worker assigned to task %s", t.ID)
-		log.Println(msg)
-		return errors.New(msg)
+		logger.Warn("no worker assigned to task", "task_id", t.ID)
+		return fmt.Errorf("no worker assigned to task %s", t.ID)
 	}
 	hostPort := getHostPort(t.HostPorts)
 	worker := strings.Split(w, ":")
 	url := fmt.Sprintf("http://%s:%s/%s", worker[0], *hostPort, t.HealthCheck)
 
-	log.Printf("Calling health check for task %s: %s", t.ID, url)
+	logger.Debug("health check url", "task_id", t.ID, "url", url)
 	resp, err := http.Get(url)
 	if err != nil {
-		msg := fmt.Sprintf("Error connecting to health check %s", url)
-		log.Println(msg)
-		return errors.New(msg)
+		logger.Error("health check connection failed", "url", url, "err", err)
+		return fmt.Errorf("error connecting to health check %s", url)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		msg := fmt.Sprintf("Error health check for task %s did not return 200\n", t.ID)
-		log.Println(msg)
-		return errors.New(msg)
+		logger.Warn("health check returned non-200", "task_id", t.ID, "status", resp.StatusCode)
+		return fmt.Errorf("health check for task %s did not return 200", t.ID)
 	}
 
-	log.Printf("Task %s health check response: %v\n", t.ID, resp.StatusCode)
-
+	logger.Info("health check passed", "task_id", t.ID, "status", resp.StatusCode)
 	return nil
 }
 
@@ -235,9 +227,9 @@ func (m *Manager) DoHealthChecks(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			log.Println("Performing health checks")
+			logger.Info("performing health checks")
 			m.doHealthChecks()
-			log.Println("Health checks completed")
+			logger.Info("health checks completed")
 		}
 	}
 }
@@ -268,7 +260,7 @@ func (m *Manager) restartTask(t *task.Task) {
 		Task:      *t,
 	}
 	m.AddTask(te)
-	log.Printf("Restarting task %v (attempt %d)\n", t.ID, t.RestartCount)
+	logger.Info("restarting task", "task_id", t.ID, "attempt", t.RestartCount)
 }
 
 func getHostPort(ports nat.PortMap) *string {
@@ -286,9 +278,8 @@ func (m *Manager) ProcessTasks(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			log.Println("Processing any tasks in the queue")
+			logger.Info("processing tasks")
 			m.SendWork()
-			log.Println("Sleeping for 10 seconds")
 		}
 	}
 }

@@ -3,9 +3,9 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 
+	"github.com/ctfrancia/mongeta/logger"
 	"github.com/ctfrancia/mongeta/task"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -42,21 +42,21 @@ func (a *API) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskID")
 	if taskID == "" {
-		log.Printf("No taskID passed in request.\n")
+		logger.Warn("no taskID in request")
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	tID, err := uuid.Parse(taskID)
 	if err != nil {
-		log.Printf("Invalid taskID %q: %v\n", taskID, err)
+		logger.Warn("invalid taskID", "task_id", taskID, "err", err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	taskToStop, ok := a.Worker.GetTask(tID)
 	if !ok {
-		log.Printf("No task with ID %v found", tID)
+		logger.Warn("task not found", "task_id", tID)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -65,9 +65,7 @@ func (a *API) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	taskCopy.State = task.Completed
 	a.Worker.AddTask(taskCopy)
 
-	log.Printf("Added task %v to stop container %v\n", taskToStop.ID,
-		taskToStop.ContainerID)
-
+	logger.Info("stopping container", "task_id", taskToStop.ID, "container_id", taskToStop.ContainerID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

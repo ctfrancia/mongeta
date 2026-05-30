@@ -3,37 +3,56 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 
+	"github.com/caarlos0/env/v11"
 	"github.com/ctfrancia/mongeta/config"
+	"github.com/ctfrancia/mongeta/logger"
 	"github.com/ctfrancia/mongeta/manager"
 	"github.com/ctfrancia/mongeta/worker"
-
-	"github.com/caarlos0/env/v11"
 )
 
 func main() {
+	logger.Init(logger.Options{
+		Level:  logger.LevelInfo,
+		Format: logger.FormatText,
+	})
+
 	cfg := config.Config{}
 	if err := env.Parse(&cfg); err != nil {
-		log.Fatal(err)
+		logger.Error("failed to parse config", "err", err)
+		os.Exit(1)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt,
 		syscall.SIGTERM)
 	defer stop()
 
-	log.Println("Starting Mongeta")
+	logger.Info("starting Mongeta")
 
 	w := worker.NewWorker(cfg.Worker.QueueSize)
-	wapi := worker.API{Address: cfg.Worker.Host, Port: cfg.Worker.Port, Worker: w}
+	wapi := worker.API{
+		Address:      cfg.Worker.Host,
+		Port:         cfg.Worker.Port,
+		Worker:       w,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  cfg.Server.IdleTimeout,
+	}
 
 	workers := []string{fmt.Sprintf("%s:%d", cfg.Worker.Host, cfg.Worker.Port)}
 	m := manager.New(workers, cfg.Manager.QueueSize)
-	mapi := manager.API{Address: cfg.Manager.Host, Port: cfg.Manager.Port, Manager: m}
+	mapi := manager.API{
+		Address:      cfg.Manager.Host,
+		Port:         cfg.Manager.Port,
+		Manager:      m,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  cfg.Server.IdleTimeout,
+	}
 
 	var wg sync.WaitGroup
 
@@ -59,7 +78,7 @@ func main() {
 	go func() { defer wg.Done(); mapi.Start(ctx) }()
 
 	<-ctx.Done()
-	log.Println("Shutdown signal received, waiting for goroutines...")
+	logger.Info("shutdown signal received, waiting for goroutines")
 	wg.Wait()
-	log.Println("Clean shutdown complete")
+	logger.Info("clean shutdown complete")
 }

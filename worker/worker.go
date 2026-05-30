@@ -1,7 +1,7 @@
 // Package worker is the muscle that does the work
 // 1. Run tasks as a Docker container
 // 2. Accept tasks to run from a manager
-// 3. Procide relevant stats to the manager for the pupose of scheduling tasks
+// 3. Provide relevant stats to the manager for the purpose of scheduling tasks
 // 4. Keep track of its tasks and their state
 package worker
 
@@ -9,10 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
+	"github.com/ctfrancia/mongeta/logger"
 	"github.com/ctfrancia/mongeta/task"
 	"github.com/google/uuid"
 )
@@ -60,10 +60,10 @@ func (w *Worker) CollectStats(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			log.Println("Collecting stats")
+			logger.Info("collecting stats")
 			w.Stats = GetStats()
 			w.Stats.TaskCount = w.TaskCount
-			log.Println("Stats collected")
+			logger.Info("stats collected")
 		}
 	}
 }
@@ -74,13 +74,13 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 	config := task.NewConfig(&t)
 	d, err := task.NewDocker(config)
 	if err != nil {
-		log.Printf("Error creating docker client: %v\n", err)
+		logger.Error("error creating docker client", "err", err)
 		return task.DockerResult{Error: err}
 	}
 
 	result := d.Run()
 	if result.Error != nil {
-		log.Printf("Error starting container %v: %v\n", t.ContainerID, result.Error)
+		logger.Error("error starting container", "container_id", t.ContainerID, "err", result.Error)
 		t.State = task.Failed
 		w.mu.Lock()
 		w.DB[t.ID] = &t
@@ -102,13 +102,13 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 
 	d, err := task.NewDocker(config)
 	if err != nil {
-		log.Printf("Error creating docker client: %v\n", err)
+		logger.Error("error creating docker client", "err", err)
 		return task.DockerResult{Error: err}
 	}
 
 	result := d.Stop(t.ContainerID)
 	if result.Error != nil {
-		log.Printf("Error stopping container %v: %v\n", t.ContainerID, result.Error)
+		logger.Error("error stopping container", "container_id", t.ContainerID, "err", result.Error)
 		return result
 	}
 
@@ -117,7 +117,7 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 	w.mu.Lock()
 	w.DB[t.ID] = &t
 	w.mu.Unlock()
-	log.Printf("Stopped and removed container %v for task %v\n", t.ContainerID, t.ID)
+	logger.Info("stopped container", "container_id", t.ContainerID, "task_id", t.ID)
 
 	return result
 }
@@ -126,7 +126,7 @@ func (w *Worker) AddTask(t task.Task) {
 	select {
 	case w.Queue <- t:
 	default:
-		log.Printf("Worker queue is full, dropping task %v\n", t.ID)
+		logger.Warn("worker queue full, dropping task", "task_id", t.ID)
 	}
 }
 
@@ -159,7 +159,7 @@ func (w *Worker) runTask() task.DockerResult {
 		}
 		return result
 	default:
-		log.Println("No tasks in the queue")
+		logger.Debug("no tasks in queue")
 		return task.DockerResult{Error: nil}
 	}
 }
@@ -168,7 +168,7 @@ func (w *Worker) InspectTask(t task.Task) task.DockerInspectResponse {
 	config := task.NewConfig(&t)
 	d, err := task.NewDocker(config)
 	if err != nil {
-		log.Printf("Error creating docker client: %v\n", err)
+		logger.Error("error creating docker client", "err", err)
 		return task.DockerInspectResponse{Error: err}
 	}
 
@@ -183,9 +183,9 @@ func (w *Worker) UpdateTasks(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			log.Println("Checking status of tasks")
+			logger.Info("checking task status")
 			w.updateTasks()
-			log.Println("Task updates completed")
+			logger.Info("task updates completed")
 		}
 	}
 }
@@ -207,19 +207,19 @@ func (w *Worker) updateTasks() {
 
 		resp := w.InspectTask(*t)
 		if resp.Error != nil {
-			log.Printf("ERROR: %v\n", resp.Error)
+			logger.Error("error updating task", "task_id", id, "err", resp.Error)
 		}
 
 		w.mu.Lock()
 		if resp.Container == nil {
-			log.Printf("No container for running task %s \n", id)
+			logger.Error("no container for running task", "task_id", id)
 			w.DB[id].State = task.Failed
 			w.mu.Unlock()
 			continue
 		}
 
 		if resp.Container.State.Status == "exited" {
-			log.Printf("Container for task %s is non-running state %s", id, resp.Container.State.Status)
+			logger.Warn("container in non-running state", "task_id", id, "status", resp.Container.State.Status)
 			w.DB[id].State = task.Failed
 		}
 
@@ -238,7 +238,7 @@ func (w *Worker) RunTasks(ctx context.Context, interval time.Duration) {
 		case <-ticker.C:
 			result := w.runTask()
 			if result.Error != nil {
-				log.Printf("Error running task: %v\n", result.Error)
+				logger.Error("error running task", "err", result.Error)
 			}
 		}
 	}

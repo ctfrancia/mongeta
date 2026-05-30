@@ -3,17 +3,21 @@ package manager
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
+	"time"
 
+	"github.com/ctfrancia/mongeta/logger"
 	"github.com/go-chi/chi/v5"
 )
 
 type API struct {
-	Address string
-	Port    int
-	Manager *Manager
-	Router  *chi.Mux
+	Address      string
+	Port         int
+	Manager      *Manager
+	Router       *chi.Mux
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
 }
 
 type ErrResponse struct {
@@ -23,17 +27,23 @@ type ErrResponse struct {
 
 func (a *API) Start(ctx context.Context) {
 	a.initRouter()
-	srv := &http.Server{Addr: fmt.Sprintf("%s:%d", a.Address, a.Port), Handler: a.Router}
+	srv := &http.Server{
+		Addr:         fmt.Sprintf("%s:%d", a.Address, a.Port),
+		Handler:      a.Router,
+		ReadTimeout:  a.ReadTimeout,
+		WriteTimeout: a.WriteTimeout,
+		IdleTimeout:  a.IdleTimeout,
+	}
 
 	go func() {
 		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-			log.Printf("HTTP server error: %v", err)
+			logger.Error("manager HTTP server error", "err", err)
 		}
 	}()
 
 	<-ctx.Done()
 	if err := srv.Shutdown(context.Background()); err != nil {
-		log.Printf("HTTP server shutdown error: %v", err)
+		logger.Error("manager HTTP server shutdown error", "err", err)
 	}
 }
 

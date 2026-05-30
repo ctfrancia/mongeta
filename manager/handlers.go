@@ -3,10 +3,10 @@ package manager
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
 
+	"github.com/ctfrancia/mongeta/logger"
 	"github.com/ctfrancia/mongeta/task"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -30,7 +30,7 @@ func (a *API) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.Manager.AddTask(te)
-	log.Printf("Added task %v to manager\n", te.Task.ID)
+	logger.Info("added task to manager", "task_id", te.Task.ID)
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(te.Task)
 }
@@ -54,17 +54,23 @@ func (a *API) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
 func (a *API) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskID")
 	if taskID == "" {
-		log.Printf("No taskID passed in request.\n")
+		logger.Warn("no taskID in request")
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	tID, _ := uuid.Parse(taskID)
+	tID, err := uuid.Parse(taskID)
+	if err != nil {
+		logger.Warn("invalid taskID", "task_id", taskID, "err", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
 	a.Manager.mu.RLock()
 	taskToStop, ok := a.Manager.TaskDB[tID]
 	a.Manager.mu.RUnlock()
 	if !ok {
-		log.Printf("No task with ID %v found", tID)
+		logger.Warn("task not found", "task_id", tID)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -80,23 +86,6 @@ func (a *API) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	te.Task = taskCopy
 	a.Manager.AddTask(te)
 
-	log.Printf("Added task %v to stop task  %v\n", taskToStop.ID, taskToStop.ID)
+	logger.Info("stopping task", "task_id", taskToStop.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
-
-/*
-func runTasks(w *worker.Worker) {
-	for {
-		if w.Queue.Len() != 0 {
-			result := w.RunTask()
-			if result.Error != nil {
-				log.Printf("Error running task: %v\n", result.Error)
-			}
-		} else {
-			log.Printf("No tasks to process currently.\n")
-		}
-		log.Println("Sleeping for 10 seconds.")
-		time.Sleep(10 * time.Second)
-	}
-}
-*/
