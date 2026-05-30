@@ -11,12 +11,9 @@ import (
 
 	"github.com/ctfrancia/mongeta/config"
 	"github.com/ctfrancia/mongeta/manager"
-	"github.com/ctfrancia/mongeta/task"
 	"github.com/ctfrancia/mongeta/worker"
 
 	"github.com/caarlos0/env/v11"
-	"github.com/golang-collections/collections/queue"
-	"github.com/google/uuid"
 )
 
 func main() {
@@ -31,14 +28,11 @@ func main() {
 
 	log.Println("Starting Mongeta")
 
-	w := worker.Worker{
-		Queue: *queue.New(),
-		DB:    make(map[uuid.UUID]*task.Task),
-	}
-	wapi := worker.API{Address: cfg.Worker.Host, Port: cfg.Worker.Port, Worker: &w}
+	w := worker.NewWorker(cfg.Worker.QueueSize)
+	wapi := worker.API{Address: cfg.Worker.Host, Port: cfg.Worker.Port, Worker: w}
 
 	workers := []string{fmt.Sprintf("%s:%d", cfg.Worker.Host, cfg.Worker.Port)}
-	m := manager.New(workers)
+	m := manager.New(workers, cfg.Manager.QueueSize)
 	mapi := manager.API{Address: cfg.Manager.Host, Port: cfg.Manager.Port, Manager: m}
 
 	var wg sync.WaitGroup

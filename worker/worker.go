@@ -10,27 +10,46 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/ctfrancia/mongeta/task"
-	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 )
 
 type Worker struct {
 	Name      string
-	Queue     queue.Queue
+	Queue     chan task.Task
 	DB        map[uuid.UUID]*task.Task
+	mu        sync.RWMutex
 	Stats     *Stats
 	TaskCount int
 }
 
+func NewWorker(queueSize int) *Worker {
+	return &Worker{
+		Queue: make(chan task.Task, queueSize),
+		DB:    make(map[uuid.UUID]*task.Task),
+	}
+}
+
 func (w *Worker) GetTasks() []*task.Task {
-	tasks := []*task.Task{}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	tasks := make([]*task.Task, 0, len(w.DB))
 	for _, t := range w.DB {
 		tasks = append(tasks, t)
 	}
 	return tasks
+}
+
+// GetTask returns the task with the given ID and whether it was found,
+// reading w.DB under a read lock.
+func (w *Worker) GetTask(id uuid.UUID) (*task.Task, bool) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	t, ok := w.DB[id]
+	return t, ok
 }
 
 func (w *Worker) CollectStats(ctx context.Context, interval time.Duration) {
@@ -63,13 +82,17 @@ func (w *Worker) StartTask(t task.Task) task.DockerResult {
 	if result.Error != nil {
 		log.Printf("Error starting container %v: %v\n", t.ContainerID, result.Error)
 		t.State = task.Failed
+		w.mu.Lock()
 		w.DB[t.ID] = &t
+		w.mu.Unlock()
 		return result
 	}
 
 	t.ContainerID = result.ContainerID
 	t.State = task.Running
+	w.mu.Lock()
 	w.DB[t.ID] = &t
+	w.mu.Unlock()
 
 	return result
 }
@@ -91,47 +114,54 @@ func (w *Worker) StopTask(t task.Task) task.DockerResult {
 
 	t.FinishTime = time.Now().UTC()
 	t.State = task.Completed
+	w.mu.Lock()
 	w.DB[t.ID] = &t
+	w.mu.Unlock()
 	log.Printf("Stopped and removed container %v for task %v\n", t.ContainerID, t.ID)
 
 	return result
 }
 
 func (w *Worker) AddTask(t task.Task) {
-	w.Queue.Enqueue(t)
+	select {
+	case w.Queue <- t:
+	default:
+		log.Printf("Worker queue is full, dropping task %v\n", t.ID)
+	}
 }
 
 func (w *Worker) runTask() task.DockerResult {
-	t := w.Queue.Dequeue()
-	if t == nil {
+	select {
+	case taskQueued := <-w.Queue:
+		w.mu.RLock()
+		taskPersisted := w.DB[taskQueued.ID]
+		w.mu.RUnlock()
+
+		if taskPersisted == nil {
+			taskPersisted = &taskQueued
+			w.mu.Lock()
+			w.DB[taskQueued.ID] = &taskQueued
+			w.mu.Unlock()
+		}
+
+		var result task.DockerResult
+		if task.ValidStateTransition(taskPersisted.State, taskQueued.State) {
+			switch taskQueued.State {
+			case task.Scheduled:
+				result = w.StartTask(taskQueued)
+			case task.Completed:
+				result = w.StopTask(taskQueued)
+			default:
+				result.Error = errors.New("we should not get here")
+			}
+		} else {
+			result.Error = fmt.Errorf("invalid transition from %v to %v", taskPersisted.State, taskQueued.State)
+		}
+		return result
+	default:
 		log.Println("No tasks in the queue")
 		return task.DockerResult{Error: nil}
 	}
-
-	taskQueued := t.(task.Task)
-
-	taskPersisted := w.DB[taskQueued.ID]
-	if taskPersisted == nil {
-		taskPersisted = &taskQueued
-		w.DB[taskQueued.ID] = &taskQueued
-	}
-
-	var result task.DockerResult
-	if task.ValidStateTransition(taskPersisted.State, taskQueued.State) {
-		switch taskQueued.State {
-		case task.Scheduled:
-			result = w.StartTask(taskQueued)
-		case task.Completed:
-			result = w.StopTask(taskQueued)
-		default:
-			result.Error = errors.New("we should not get here")
-		}
-	} else {
-		err := fmt.Errorf("invalid transition from %v to %v", taskPersisted.State, taskQueued.State)
-		result.Error = err
-		return result
-	}
-	return result
 }
 
 func (w *Worker) InspectTask(t task.Task) task.DockerInspectResponse {
@@ -154,33 +184,47 @@ func (w *Worker) UpdateTasks(ctx context.Context, interval time.Duration) {
 			return
 		case <-ticker.C:
 			log.Println("Checking status of tasks")
-			w.updateTasks(ctx)
+			w.updateTasks()
 			log.Println("Task updates completed")
 		}
 	}
 }
 
-func (w *Worker) updateTasks(ctx context.Context) {
+func (w *Worker) updateTasks() {
+	w.mu.RLock()
+	ids := make([]uuid.UUID, 0, len(w.DB))
 	for id, t := range w.DB {
 		if t.State == task.Running {
-			resp := w.InspectTask(*t)
-			if resp.Error != nil {
-				log.Printf("ERROR: %v\n", resp.Error)
-			}
-
-			if resp.Container == nil {
-				log.Printf("No container for running task %s \n", id)
-				w.DB[id].State = task.Failed
-				continue
-			}
-
-			if resp.Container.State.Status == "exited" {
-				log.Printf("Container for task %s is non-running state %s", id, resp.Container.State.Status)
-				w.DB[id].State = task.Failed
-			}
-
-			w.DB[id].HostPorts = resp.Container.NetworkSettings.NetworkSettingsBase.Ports
+			ids = append(ids, id)
 		}
+	}
+	w.mu.RUnlock()
+
+	for _, id := range ids {
+		w.mu.RLock()
+		t := w.DB[id]
+		w.mu.RUnlock()
+
+		resp := w.InspectTask(*t)
+		if resp.Error != nil {
+			log.Printf("ERROR: %v\n", resp.Error)
+		}
+
+		w.mu.Lock()
+		if resp.Container == nil {
+			log.Printf("No container for running task %s \n", id)
+			w.DB[id].State = task.Failed
+			w.mu.Unlock()
+			continue
+		}
+
+		if resp.Container.State.Status == "exited" {
+			log.Printf("Container for task %s is non-running state %s", id, resp.Container.State.Status)
+			w.DB[id].State = task.Failed
+		}
+
+		w.DB[id].HostPorts = resp.Container.NetworkSettings.NetworkSettingsBase.Ports
+		w.mu.Unlock()
 	}
 }
 
@@ -192,13 +236,9 @@ func (w *Worker) RunTasks(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if w.Queue.Len() != 0 {
-				result := w.runTask()
-				if result.Error != nil {
-					log.Printf("Error running task: %v\n", result.Error)
-				}
-			} else {
-				log.Printf("No tasks to process currently.\n")
+			result := w.runTask()
+			if result.Error != nil {
+				log.Printf("Error running task: %v\n", result.Error)
 			}
 		}
 	}

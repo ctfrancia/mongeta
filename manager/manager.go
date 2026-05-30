@@ -17,23 +17,24 @@ import (
 
 	"github.com/ctfrancia/mongeta/task"
 
-	"github.com/golang-collections/collections/queue"
 	"github.com/google/uuid"
 
 	"github.com/docker/go-connections/nat"
+	"sync"
 )
 
 type Manager struct {
-	Pending       queue.Queue
+	Pending       chan task.TaskEvent
 	TaskDB        map[uuid.UUID]*task.Task
 	EventDB       map[uuid.UUID]*task.TaskEvent
 	Workers       []string
 	WorkerTaskMap map[string][]uuid.UUID
 	TaskWorkerMap map[uuid.UUID]string
 	LastWorker    int
+	mu            sync.RWMutex
 }
 
-func New(workers []string) *Manager {
+func New(workers []string, queueSize int) *Manager {
 	taskDB := make(map[uuid.UUID]*task.Task)
 	eventDB := make(map[uuid.UUID]*task.TaskEvent)
 	workerTaskMap := make(map[string][]uuid.UUID)
@@ -43,7 +44,7 @@ func New(workers []string) *Manager {
 	}
 
 	return &Manager{
-		Pending:       *queue.New(),
+		Pending:       make(chan task.TaskEvent, queueSize),
 		TaskDB:        taskDB,
 		EventDB:       eventDB,
 		Workers:       workers,
@@ -53,6 +54,8 @@ func New(workers []string) *Manager {
 }
 
 func (m *Manager) SelectWorker() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var newWorker int
 	if m.LastWorker+1 < len(m.Workers) {
 		newWorker = m.LastWorker + 1
@@ -66,21 +69,20 @@ func (m *Manager) SelectWorker() string {
 }
 
 func (m *Manager) SendWork() {
-	if m.Pending.Len() > 0 {
+	select {
+	case te := <-m.Pending:
 		w := m.SelectWorker()
-
-		e := m.Pending.Dequeue()
-		te := e.(task.TaskEvent)
 		t := te.Task
 
 		log.Printf("Sending task %v to worker %v\n", t.ID, w)
 
+		m.mu.Lock()
 		m.EventDB[te.ID] = &te
 		m.WorkerTaskMap[w] = append(m.WorkerTaskMap[w], te.Task.ID)
 		m.TaskWorkerMap[t.ID] = w
-
 		t.State = task.Scheduled
 		m.TaskDB[t.ID] = &t
+		m.mu.Unlock()
 
 		data, err := json.Marshal(te)
 		if err != nil {
@@ -112,13 +114,17 @@ func (m *Manager) SendWork() {
 			return
 		}
 		log.Printf("%#v", t)
-	} else {
+	default:
 		log.Println("No work in the queue")
 	}
 }
 
 func (m *Manager) AddTask(te task.TaskEvent) {
-	m.Pending.Enqueue(te)
+	select {
+	case m.Pending <- te:
+	default:
+		log.Printf("Manager queue is full, dropping task %v\n", te.Task.ID)
+	}
 }
 
 func (m *Manager) UpdateTasks(ctx context.Context, interval time.Duration) {
@@ -163,25 +169,41 @@ func (m *Manager) updateTasks() {
 		for _, t := range tasks {
 			log.Printf("Attempting to update task %v", t.ID)
 
+			m.mu.Lock()
 			_, ok := m.TaskDB[t.ID]
 			if !ok {
 				log.Printf("Task with ID %s not found\n", t.ID)
+				m.mu.Unlock()
 				continue
 			}
 			if m.TaskDB[t.ID].State != t.State {
 				m.TaskDB[t.ID].State = t.State
 			}
-
 			m.TaskDB[t.ID].StartTime = t.StartTime
 			m.TaskDB[t.ID].FinishTime = t.FinishTime
 			m.TaskDB[t.ID].ContainerID = t.ContainerID
+			m.mu.Unlock()
 		}
 	}
 }
 
+// GetTaskWorker returns the worker address assigned to the given task ID and
+// whether an assignment exists, reading m.TaskWorkerMap under a read lock.
+func (m *Manager) GetTaskWorker(id uuid.UUID) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	w, ok := m.TaskWorkerMap[id]
+	return w, ok
+}
+
 func (m *Manager) checkTaskHealth(t task.Task) error {
 	log.Printf("Calling health check for task %s: %s\n", t.ID, t.HealthCheck)
-	w := m.TaskWorkerMap[t.ID]
+	w, ok := m.GetTaskWorker(t.ID)
+	if !ok {
+		msg := fmt.Sprintf("No worker assigned to task %s", t.ID)
+		log.Println(msg)
+		return errors.New(msg)
+	}
 	hostPort := getHostPort(t.HostPorts)
 	worker := strings.Split(w, ":")
 	url := fmt.Sprintf("http://%s:%s/%s", worker[0], *hostPort, t.HealthCheck)
@@ -233,9 +255,11 @@ func (m *Manager) doHealthChecks() {
 }
 
 func (m *Manager) restartTask(t *task.Task) {
+	m.mu.Lock()
 	t.RestartCount++
 	t.State = task.Scheduled
 	m.TaskDB[t.ID] = t
+	m.mu.Unlock()
 
 	te := task.TaskEvent{
 		ID:        uuid.New(),

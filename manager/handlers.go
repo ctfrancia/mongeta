@@ -36,7 +36,9 @@ func (a *API) StartTaskHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) GetTasks() []*task.Task {
-	tasks := []*task.Task{}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tasks := make([]*task.Task, 0, len(m.TaskDB))
 	for _, t := range m.TaskDB {
 		tasks = append(tasks, t)
 	}
@@ -58,7 +60,9 @@ func (a *API) StopTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tID, _ := uuid.Parse(taskID)
+	a.Manager.mu.RLock()
 	taskToStop, ok := a.Manager.TaskDB[tID]
+	a.Manager.mu.RUnlock()
 	if !ok {
 		log.Printf("No task with ID %v found", tID)
 		w.WriteHeader(http.StatusNotFound)

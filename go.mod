@@ -1,12 +1,12 @@
 module github.com/ctfrancia/mongeta
 
-go 1.24.0
+go 1.26.3
 
 require (
+	github.com/caarlos0/env/v11 v11.4.1
 	github.com/docker/docker v28.3.3+incompatible
 	github.com/docker/go-connections v0.5.0
 	github.com/go-chi/chi/v5 v5.2.3
-	github.com/golang-collections/collections v0.0.0-20130729185459-604e922904d3
 	github.com/google/uuid v1.6.0
 	github.com/moby/moby/api v1.52.0-alpha.1
 	github.com/moby/moby/client v0.1.0-alpha.0
@@ -15,7 +15,6 @@ require (
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/caarlos0/env/v11 v11.4.1 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
