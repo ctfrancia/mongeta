@@ -44,7 +44,7 @@ func main() {
 	}
 
 	workers := []string{fmt.Sprintf("%s:%d", cfg.Worker.Host, cfg.Worker.Port)}
-	m := manager.New(workers, cfg.Manager.QueueSize)
+	m := manager.New(workers, cfg.Manager.QueueSize, cfg.Manager.MaxRestarts)
 	mapi := manager.API{
 		Address:      cfg.Manager.Host,
 		Port:         cfg.Manager.Port,
@@ -61,6 +61,9 @@ func main() {
 
 	wg.Add(1)
 	go func() { defer wg.Done(); w.CollectStats(ctx, cfg.Worker.StatsInterval) }()
+
+	wg.Add(1)
+	go func() { defer wg.Done(); w.UpdateTasks(ctx, cfg.Worker.UpdateInterval) }()
 
 	wg.Add(1)
 	go func() { defer wg.Done(); wapi.Start(ctx) }()

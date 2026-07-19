@@ -28,10 +28,11 @@ type Manager struct {
 	WorkerTaskMap map[string][]uuid.UUID
 	TaskWorkerMap map[uuid.UUID]string
 	LastWorker    int
+	MaxRestarts   int
 	mu            sync.RWMutex
 }
 
-func New(workers []string, queueSize int) *Manager {
+func New(workers []string, queueSize int, maxRestarts int) *Manager {
 	taskDB := make(map[uuid.UUID]*task.Task)
 	eventDB := make(map[uuid.UUID]*task.TaskEvent)
 	workerTaskMap := make(map[string][]uuid.UUID)
@@ -47,6 +48,7 @@ func New(workers []string, queueSize int) *Manager {
 		Workers:       workers,
 		WorkerTaskMap: workerTaskMap,
 		TaskWorkerMap: taskWorkerMap,
+		MaxRestarts:   maxRestarts,
 	}
 }
 
@@ -236,11 +238,11 @@ func (m *Manager) DoHealthChecks(ctx context.Context, interval time.Duration) {
 
 func (m *Manager) doHealthChecks() {
 	for _, t := range m.GetTasks() {
-		if t.State == task.Running && t.RestartCount < 3 {
+		if t.State == task.Running && t.RestartCount < m.MaxRestarts {
 			if err := m.checkTaskHealth(*t); err != nil {
 				m.restartTask(t)
 			}
-		} else if t.State == task.Failed && t.RestartCount < 3 {
+		} else if t.State == task.Failed && t.RestartCount < m.MaxRestarts {
 			m.restartTask(t)
 		}
 	}
